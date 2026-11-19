@@ -254,7 +254,7 @@ check_match(samples, num_simulations, x_o)
 # %% [markdown] tags=["student"]
 # **✍️ One sentence.** What did you change, and why did it work?
 #
-# **🗣 On the board:** your lowest number of simulations that still passes.
+# **🗣 On the board:** your lowest number of simulations that passes three runs in a row. With few simulations a single pass can be luck, so run the training cell and the check again with the same number. The check counts the passes in a row for you.
 
 # %% [markdown] tags=["solution"]
 # **Why it works.** Two things were wrong, and each alone keeps the check failing.
@@ -284,7 +284,17 @@ ax.set(xscale="log", xlabel="number of simulations", ylabel="mismatch score", yl
 ax.legend();
 
 # %% [markdown] tags=["solution"]
-# **For the record.** "Flexible enough" does not mean "as flexible as possible". The true posterior here is a Gaussian whose mean follows x. A mixture density network (`density_estimator="mdn"`) builds that shape in, so it needs far fewer simulations than the spline flow: it often passes with about 100. sbi's default flow (`"maf"`) lies in between, at a few hundred. Knowing the shape of the answer buys simulations.
+# **For the record.** "Flexible enough" does not mean "as flexible as possible". The true posterior here is a Gaussian whose mean follows x. A mixture density network (`density_estimator="mdn"`) builds that shape in, so it needs far fewer simulations than the spline flow. sbi's default flow (`"maf"`) lies in between. Knowing the shape of the answer buys simulations.
+#
+# **Why the board asks for three passes in a row.** Near the record a pass is partly luck. How many of ten runs passed in our measurements, each run with new simulations and a new training:
+#
+# | Density estimator | 100 | 200 | 500 | 1,000 | 2,000 simulations |
+# | --- | --- | --- | --- | --- | --- |
+# | `"mdn"` | 2 | 9 | 7 | 10 | 10 |
+# | `"maf"`, sbi's default | 1 | 3 | 8 | 10 | 10 |
+# | `"nsf"` as in the cell above | 0 | 0 | 0 | 7 | 10 |
+#
+# With `"mdn"` a single pass at 100 simulations happens, three in a row almost never. At 200 three in a row are likely, and from 1,000 on every run passed.
 #
 # **How sharp is the mismatch score?** Not very, and it is worth saying so in the room. We distorted samples of the answer key on purpose and scored them:
 #

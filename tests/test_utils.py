@@ -81,6 +81,26 @@ def test_check_match_tells_right_from_wrong():
     assert not tu.RESULTS["Part 2 · match"]
 
 
+def test_board_counts_three_passes_in_a_row(capsys):
+    x_o = torch.tensor([3.2, -1.1])
+    exact = tu.ExactPosterior(x_o)
+    tu._board.update(num_simulations=None, fingerprint=None, in_a_row=0)
+    for seed in (5, 6):
+        tu.check_match(exact.sample((2000,), seed=seed), 500, x_o)
+    assert "2 of 3 passes in a row with 500 simulations" in capsys.readouterr().out
+    samples = exact.sample((2000,), seed=7)
+    tu.check_match(samples, 500, x_o)
+    assert "For the board: 500 simulations, 3 passes in a row" in capsys.readouterr().out
+    tu.check_match(samples, 500, x_o)  # the same samples once more: not a new run
+    assert "samples of the last check" in capsys.readouterr().out
+    tu.check_match(x_o + torch.randn(2000, 2), 500, x_o)  # a failed run starts the count again
+    assert "0 of 3 passes in a row" in capsys.readouterr().out
+    tu.check_match(exact.sample((2000,), seed=8), 400, x_o)  # and so does another number
+    assert "1 of 3 passes in a row with 400 simulations" in capsys.readouterr().out
+    tu.check_repair(exact.sample((2000,), seed=9), 400, x_o, low=-6, high=6)  # the bonus has no board
+    assert "For the board" not in capsys.readouterr().out
+
+
 def test_check_iid_accepts_the_answer_key_and_rejects_drift():
     x_iid = tu.load_toy_observations()
     n_values = [1, 5, 10, 25, 50, 100]

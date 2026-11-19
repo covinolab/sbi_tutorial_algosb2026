@@ -28,3 +28,9 @@ The repository as it was before these changes is tagged `before-changes-2026-11-
 - The text of Part 2 says how the score is made and how much it still moves. In the table of bonus 4, the score of one network on the transition histogram reads 3.3 to 3.4, which also covers the trainings of the executed solutions.
 
 **Why.** A single training is partly luck. Over ten training seeds our reference statistics scored 3.37 to 3.60 (standard deviation 0.07): one bronze, six silver, three gold. A medal, and "the best score in the room", partly measured the seed. The mean of three moves by about ±0.04: the reference statistics are silver in 97% of the 120 possible seed triples (gold in the other 3%), and our gold statistics are gold in all of them. The price is time: an attempt in Part 2 takes about 27 seconds instead of about 10 on two CPU cores, and the solutions notebook runs in about 6 minutes instead of 4.
+
+## Notebook 1: the board counts three passes in a row
+
+**What changed.** The check of Part 2 counts the passes in a row with the same number of simulations and prints the count under its verdict. The board asks for the lowest number of simulations that passes three runs in a row. Checking the same samples twice does not count as a new run, and the repair bonus, which reuses the check, has no board. The challenge itself still passes with a single pass. The solutions show how often each density estimator passed in our runs, and a new test covers the count.
+
+**Why.** Near the record a pass is partly luck. In ten runs per setting, each with new simulations and a new training, the mixture density network passed 2 times with 100 simulations, 9 times with 200, 7 times with 500, and every time from 1,000 on. A record set by a single pass rewards the luckiest run rather than the best setting. The solutions also no longer say that this network "often passes with about 100".

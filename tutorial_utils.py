@@ -306,8 +306,17 @@ def mismatch_score(samples, reference_samples):
     return c2st(samples[:n], reference_samples[:n], seed=0).item()
 
 
+BOARD_RUNS = 3  # Part 2's board counts a number of simulations after this many passes in a row
+_board = {"num_simulations": None, "fingerprint": None, "in_a_row": 0}
+
+
 def check_match(samples, num_simulations, x_o, low=TOY_LOW, high=TOY_HIGH, key="Part 2 · match"):
-    """Part 2. Do samples of your posterior match samples of the answer key?"""
+    """Part 2. Do samples of your posterior match samples of the answer key?
+
+    For the board of Part 2, a number of simulations counts once it has passed three runs
+    in a row: simulate, train and sample again, with the same number of simulations, and
+    check again. A single pass with few simulations can be luck.
+    """
     b = load_benchmarks()["toy"]
     samples = _as_tensor(samples, "samples")
     if samples.ndim != 2 or samples.shape[1] != 2 or len(samples) < 1000:
@@ -316,9 +325,31 @@ def check_match(samples, num_simulations, x_o, low=TOY_LOW, high=TOY_HIGH, key="
         return
     exact = ExactPosterior(x_o, low=low, high=high)
     score = mismatch_score(samples, exact.sample((2000,), seed=1))
-    _report(key, score <= b["c2st_max"],
+    passed = score <= b["c2st_max"]
+    _report(key, passed,
             f"mismatch score {score:.2f} (target ≤ {b['c2st_max']}) "
             f"with {int(num_simulations):,} simulations")
+    if key == "Part 2 · match":
+        _count_for_the_board(samples, int(num_simulations), passed)
+
+
+def _count_for_the_board(samples, num_simulations, passed):
+    """Count the passes in a row with the same number of simulations (Part 2's board)."""
+    fingerprint = hash(samples.detach().cpu().numpy().tobytes())
+    if fingerprint == _board["fingerprint"]:
+        print("    For the board: these are the samples of the last check. "
+              "Run the training cell again for a new run.")
+        return
+    if num_simulations != _board["num_simulations"]:
+        _board.update(num_simulations=num_simulations, in_a_row=0)
+    _board["fingerprint"] = fingerprint
+    _board["in_a_row"] = _board["in_a_row"] + 1 if passed else 0
+    in_a_row = _board["in_a_row"]
+    if in_a_row >= BOARD_RUNS:
+        print(f"    🗣 For the board: {num_simulations:,} simulations, {in_a_row} passes in a row.")
+    else:
+        print(f"    For the board: {in_a_row} of {BOARD_RUNS} passes in a row with "
+              f"{num_simulations:,} simulations.")
 
 
 class BlackBox:
