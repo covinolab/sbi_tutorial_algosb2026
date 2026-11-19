@@ -1,8 +1,8 @@
 # Changes since 14 November 2026
 
-The repository as it was before these changes is tagged `before-changes-2026-11-19`.
+The repository as it was before these changes is commit `0739d1b` of 14 November.
 
-- To look at it: `git checkout before-changes-2026-11-19`
+- To look at it: `git checkout 0739d1b`
 - To undo one change on `main`: `git revert <commit>`. Each section below is one commit.
 
 ## Notebook 2: the ensemble and learned-summary bonuses
