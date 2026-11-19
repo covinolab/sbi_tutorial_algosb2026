@@ -70,7 +70,7 @@ The networks are pickled, so run the scripts with the `sbi` version the notebook
 ```bash
 pip install pytest nbclient ipykernel
 pytest tests/test_utils.py -q             # about a minute
-pytest tests/test_notebooks.py -q -s      # executes all four notebooks, about 12 minutes
+pytest tests/test_notebooks.py -q -s      # executes all four notebooks, about 13 minutes
 ```
 
 The notebook test checks that the student notebooks run from top to bottom with every challenge still open, and that the solutions notebooks pass every check. With `-s` it prints the slowest cells.

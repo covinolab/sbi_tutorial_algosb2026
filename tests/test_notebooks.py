@@ -1,4 +1,4 @@
-"""Execute all four notebooks from top to bottom. Takes about ten minutes.
+"""Execute all four notebooks from top to bottom. Takes about 13 minutes.
 
     pytest tests/test_notebooks.py -q -s
 

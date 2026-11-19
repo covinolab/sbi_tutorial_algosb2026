@@ -40,3 +40,18 @@ The repository as it was before these changes is tagged `before-changes-2026-11-
 **What changed.** `INSTALL.md` sets up a virtual environment for Linux, macOS and Windows in a few commands, from `requirements.txt` (sbi 0.27.0, JupyterLab, ipywidgets). On Linux it installs the CPU build of PyTorch first. The README points to it, lists the new files and gives the current run times, and git ignores `.venv/`.
 
 **Why.** Some students may not reach Colab. On Linux, `pip install sbi` alone pulls the CUDA build of PyTorch with its NVIDIA libraries, several gigabytes; the CPU build is all these notebooks need. ipywidgets draws sbi's progress bars in Jupyter. Tested on Linux from a fresh clone with Python 3.10 and 3.12: the installation takes about a minute and 1.6 GB, and all tests pass in both, including the four notebooks from top to bottom (about 13 minutes).
+
+## Notebook 1: Part 5 trains on its own simulations
+
+**What changed.**
+
+- The worked cell of Part 5 simulates 2,000 training pairs of its own, `theta_nle` and `x_nle`, instead of training NLE on whatever `theta` and `x` Part 2 left behind. The text above it, the shortcut to the stored training set (`theta_nle, x_nle = tu.load_toy_training_set()`), the solution and the NRE bonus use the new names.
+- The rejection ABC loop of Part 1 calls its draws `theta_proposal` and `x_proposal`, so running it again no longer replaces the training set.
+- The training cell of bonus 3 (NPE on sets of points) starts from a fixed seed, and its text says how often the recipe passes: in six of ten trainings.
+- One line of the Part 4 solutions showed as a large heading (one `#` too many). It is plain text again.
+- The test file and the README give the time of the notebook tests as about 13 minutes, as measured.
+
+**Why.**
+
+- *Part 5.* With the board of Part 2, students end Part 2 with as few simulations as pass three times in a row, often 200 or fewer. NLE trained on a few hundred pairs gives intervals about 50% too wide (see the solutions of Part 5), so Part 5 would fail for a reason that has nothing to do with Part 5. Running the ABC loop again after Part 2 broke Part 5 the same way, by leaving single draws in `theta` and `x`. Now Part 5 starts from the same 2,000 pairs for everyone, the starting point its solutions describe.
+- *Bonus 3.* Its training was not seeded, so its result depended on the random numbers the cells above it had drawn. The first change shifted them, and the executed solutions then failed the bonus's check: 34% too wide at n = 25, where the target is 25%. We trained the recipe with ten seeds. Up to n = 10 the widths stayed within 15% of the answer key every time. At n = 25 they passed in six trainings and were 26% to 59% too wide in four. The text said "within 10%". With seed 0, one of the six that pass, the result in the solutions no longer depends on the cells above it.
