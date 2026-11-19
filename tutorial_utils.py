@@ -12,9 +12,12 @@ Contents
 """
 
 import contextlib
+import copy
+import functools
 import io
 import json
 import pickle
+import types
 import warnings
 from pathlib import Path
 
@@ -572,7 +575,7 @@ def summarize(summary, x):
     return torch.from_numpy(s)
 
 
-def train_and_score(summary, theta, x, seed=0, density_estimator=None, verbose=True,
+def train_and_score(summary, theta, x, seed=0, num_seeds=3, density_estimator=None, verbose=True,
                     **train_kwargs):
     """Train NPE on your summary statistics and score it on the common test set.
 
@@ -583,10 +586,17 @@ def train_and_score(summary, theta, x, seed=0, density_estimator=None, verbose=T
         score                                      average log posterior density at the
                                                    true parameters of 200 test trajectories
 
+    A single training is partly luck: retrained with another seed, the same statistics
+    score a few hundredths to a tenth or two differently. So the network is trained
+    `num_seeds` times, with the seeds seed, seed + 1, ..., and the score is the mean of
+    their scores. The posterior returned is the one of the first training.
+
     Args:
         summary: your function, NumPy array (n, 5000) -> NumPy array (n, n_statistics).
         theta, x: the training set, parameters (n, 2) and raw trajectories (n, 5000).
-        seed: seed of the network initialisation and the training.
+        seed: seed of the network initialisation and the training of the first network.
+        num_seeds: number of trainings the score is averaged over. num_seeds=1 trains one
+            network, enough where only the posterior is needed.
         density_estimator: "maf", "nsf", "mdn", or a builder from sbi.neural_nets.posterior_nn.
             The default is a small neural spline flow: posterior_nn("nsf", num_transforms=2).
         train_kwargs: passed on to sbi's .train(), e.g. training_batch_size=50.
@@ -606,19 +616,55 @@ def train_and_score(summary, theta, x, seed=0, density_estimator=None, verbose=T
     theta_test, x_test = load_test_set()
     s_test = summarize(summary, x_test)
 
-    torch.manual_seed(seed)
-    with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):  # sbi's own chatter
-        warnings.simplefilter("ignore")
-        inference = NPE(prior=dw_prior(), density_estimator=density_estimator,
-                        show_progress_bars=False)
-        inference.append_simulations(theta, s).train(**train_kwargs)
-        posterior = inference.build_posterior()
-        log_probs = posterior.log_prob_batched(theta_test[None], x=s_test, norm_posterior=False)
-    score = log_probs.mean().item()
+    # Copies are taken before any training: every training starts from untrained networks
+    builders = [density_estimator] + [_untrained_copy(density_estimator) for _ in range(num_seeds - 1)]
+    posteriors, scores, epochs = [], [], []
+    for k, builder in enumerate(builders):
+        torch.manual_seed(seed + k)
+        with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):  # sbi's own chatter
+            warnings.simplefilter("ignore")
+            inference = NPE(prior=dw_prior(), density_estimator=builder, show_progress_bars=False)
+            inference.append_simulations(theta, s).train(**train_kwargs)
+            posterior = inference.build_posterior()
+            log_probs = posterior.log_prob_batched(theta_test[None], x=s_test, norm_posterior=False)
+        posteriors.append(posterior)
+        scores.append(log_probs.mean().item())
+        epochs.append(inference.epoch)
+    score = float(np.mean(scores))
     if verbose:
-        print(f"score = {score:.2f}   ({s.shape[1]} statistics, {len(theta):,} simulations, "
-              f"{inference.epoch} epochs)")
-    return posterior, score
+        if num_seeds == 1:
+            trainings = f"{epochs[0]} epochs"
+        else:
+            trainings = (f"mean of {num_seeds} trainings: " + ", ".join(f"{v:.2f}" for v in scores)
+                         + f"; {min(epochs)} to {max(epochs)} epochs")
+        print(f"score = {score:.2f}   ({s.shape[1]} statistics, {len(theta):,} simulations, {trainings})")
+    return posteriors[0], score
+
+
+def _untrained_copy(density_estimator):
+    """A copy of a density-estimator builder that shares no network with the original.
+
+    A builder from posterior_nn keeps the modules it was given, an embedding network for
+    example, and hands the very same module to every network it builds. Trained three
+    times, the second and third trainings would start from the embedding network that the
+    first one trained, and the three scores would not be independent.
+    """
+    if isinstance(density_estimator, functools.partial):
+        return copy.deepcopy(density_estimator)
+    if not isinstance(density_estimator, types.FunctionType) or not density_estimator.__closure__:
+        return density_estimator  # a name like "nsf": sbi builds new networks from it every time
+
+    def copied(cell):
+        try:
+            return types.CellType(copy.deepcopy(cell.cell_contents))
+        except ValueError:  # an empty cell
+            return types.CellType()
+
+    clone = types.FunctionType(density_estimator.__code__, density_estimator.__globals__,
+                               density_estimator.__name__, density_estimator.__defaults__,
+                               tuple(copied(cell) for cell in density_estimator.__closure__))
+    clone.__kwdefaults__ = copy.deepcopy(density_estimator.__kwdefaults__)
+    return clone
 
 
 def posterior_widths(posterior, summary, verbose=True):

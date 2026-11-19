@@ -298,8 +298,8 @@ def test_ensemble_helpers_score_and_cover(capsys):
     torch.manual_seed(0)
     theta = tu.dw_prior().sample((200,))
     x = tu.simulate_double_well(theta, seed=0).numpy()
-    members, scores = zip(*[tu.train_and_score(rs.reference_summary, theta, x, seed=seed, verbose=False,
-                                               max_num_epochs=30) for seed in range(2)])
+    members, scores = zip(*[tu.train_and_score(rs.reference_summary, theta, x, seed=seed, num_seeds=1,
+                                               verbose=False, max_num_epochs=30) for seed in range(2)])
     log_probs = torch.stack([tu.log_probs_at_truth(m, rs.reference_summary) for m in members])
     assert log_probs.shape == (2, 200)
     assert np.allclose(log_probs.mean(dim=1).numpy(), scores, atol=1e-4)
@@ -312,3 +312,34 @@ def test_ensemble_helpers_score_and_cover(capsys):
     assert "single network" in capsys.readouterr().out
     both = tu.interval_coverage(list(members), rs.reference_summary, level=0.9, num_samples=100)
     assert "ensemble of 2" in capsys.readouterr().out and all(0.0 <= c <= 1.0 for c in both)
+
+
+def test_score_is_the_mean_of_three_trainings_and_the_posterior_the_first(monkeypatch):
+    """The medal score averages three independent trainings, also when the builder holds an embedding
+    network, and the posterior returned is that of the first."""
+    from sbi.neural_nets import posterior_nn
+    from sbi.neural_nets.embedding_nets import FCEmbedding
+
+    torch.manual_seed(0)
+    theta = tu.dw_prior().sample((200,))
+    x = tu.simulate_double_well(theta, seed=0).numpy()
+
+    def builder():
+        torch.manual_seed(1)  # the same untrained embedding network every time
+        embedding = FCEmbedding(input_dim=8, output_dim=4, num_layers=1, num_hiddens=16)
+        return posterior_nn("nsf", num_transforms=1, embedding_net=embedding, z_score_x="structured")
+
+    settings = dict(verbose=False, max_num_epochs=20)
+    singles = [tu.train_and_score(rs.reference_summary, theta, x, seed=seed, num_seeds=1,
+                                  density_estimator=builder(), **settings) for seed in range(3)]
+    first, score = tu.train_and_score(rs.reference_summary, theta, x, num_seeds=3,
+                                      density_estimator=builder(), **settings)
+    assert score == pytest.approx(np.mean([s for _, s in singles]), abs=1e-4)
+    single_log_probs = tu.log_probs_at_truth(singles[0][0], rs.reference_summary)
+    assert torch.allclose(tu.log_probs_at_truth(first, rs.reference_summary), single_log_probs, atol=1e-4)
+
+    # Without the copies, the second training would start from the embedding network the first trained
+    monkeypatch.setattr(tu, "_untrained_copy", lambda density_estimator: density_estimator)
+    _, score_shared = tu.train_and_score(rs.reference_summary, theta, x, num_seeds=2,
+                                         density_estimator=builder(), **settings)
+    assert score_shared != pytest.approx(np.mean([s for _, s in singles[:2]]), abs=1e-4)

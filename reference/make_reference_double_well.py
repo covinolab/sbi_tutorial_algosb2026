@@ -104,7 +104,7 @@ def main():
     theta, x = student_training_set()
     scores = {}
     for name, summary in (("baseline", rs.baseline_summary), ("reference", rs.reference_summary)):
-        scores[name] = [tu.train_and_score(summary, theta, x, seed=s, verbose=False)[1]
+        scores[name] = [tu.train_and_score(summary, theta, x, seed=s, num_seeds=1, verbose=False)[1]
                         for s in SCORE_SEEDS]
         print(f"{name:9s} statistics, 2,000 simulations: score "
               f"{np.mean(scores[name]):.2f} ± {np.std(scores[name]):.2f} over {len(SCORE_SEEDS)} seeds")
@@ -136,7 +136,7 @@ def main():
     posteriors = {}
     for name, summary in (("baseline", rs.baseline_summary), ("reference", rs.reference_summary),
                           ("static", rs.static_summary)):
-        posteriors[name], score = tu.train_and_score(summary, theta_large, x_large, verbose=False)
+        posteriors[name], score = tu.train_and_score(summary, theta_large, x_large, num_seeds=1, verbose=False)
         save_pickle(posteriors[name], f"dw_posterior_{name}.pkl")
         print(f"{name:9s} statistics, 10,000 simulations: score {score:.2f}")
 
@@ -144,7 +144,7 @@ def main():
     b = benchmarks["double_well"]
     print(f"\nPart 2  bronze > {b['score_bronze']}, silver ≥ {b['score_silver']}, gold > {b['score_gold']}")
 
-    posterior_2k, score_2k = tu.train_and_score(rs.reference_summary, theta, x, verbose=False)
+    posterior_2k, score_2k = tu.train_and_score(rs.reference_summary, theta, x, num_seeds=1, verbose=False)
     for label, posterior in (("2,000", posterior_2k), ("10,000", posteriors["reference"])):
         samples = posterior.sample((10_000,), x=tu.summarize(rs.reference_summary, trajectories["blind"]),
                                    show_progress_bars=False)
@@ -154,7 +154,7 @@ def main():
               f"mean = {samples.mean(0).tolist()}, truth = {BLIND['theta']}")
         assert inside and area < b["blind_area_max"], "choose another blind trajectory"
 
-    posterior_static, _ = tu.train_and_score(rs.static_summary, theta, x, verbose=False)
+    posterior_static, _ = tu.train_and_score(rs.static_summary, theta, x, num_seeds=1, verbose=False)
     for label, posterior in (("2,000", posterior_static), ("10,000", posteriors["static"])):
         width_dG, width_logD = tu.posterior_widths(posterior, rs.static_summary, verbose=False)
         print(f"Part 4  static posterior ({label} simulations): ΔG‡ width {width_dG:.0%} of the prior's "

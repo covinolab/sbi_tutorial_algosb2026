@@ -260,6 +260,8 @@ print(summarize(summary_baseline, x[:3]))
 #
 # **The score** is the average log posterior density at the true parameters, over a common test set of 200 trajectories that nobody trains on. Higher is better. It rewards posteriors that are narrow and in the right place, and it punishes overconfident ones. A posterior that learned nothing and returns the prior scores −1.39.
 #
+# **Three trainings per score.** A single training is partly luck: retrained with another seed, our reference statistics score anywhere between 3.37 and 3.60. So `train_and_score` trains the network three times, with three seeds, and reports the mean of the three scores. The posterior it returns is the one of the first training. Where only the posterior matters, `num_seeds=1` trains once.
+#
 # `posterior_widths` adds a second view: how wide the 90% interval of each parameter is, as a fraction of the prior's, on average over the test set.
 
 # %%
@@ -277,7 +279,7 @@ check_score(score_baseline)
 # - 🥈 silver: you reach the score of our reference solution,
 # - 🥇 gold: you beat it.
 #
-# Retraining the same statistics with another `seed` moves the score by about ±0.05, so differences smaller than that mean nothing.
+# The mean of three trainings still moves by about ±0.04 when the same statistics are trained with other seeds, so differences smaller than that mean nothing. Each attempt takes three trainings, about half a minute.
 
 # %% tags=["student"]
 def my_summary(x):
@@ -491,14 +493,14 @@ def summary_blind_to_D(x):
         # ← replace these by your statistics
     ], axis=1)
 
-posterior_blind_to_D, _ = train_and_score(summary_blind_to_D, theta, x)
+posterior_blind_to_D, _ = train_and_score(summary_blind_to_D, theta, x, num_seeds=1)   # one training: no score needed
 check_blind_to_D(posterior_blind_to_D, summary_blind_to_D)
 
 # %% tags=["solution"]
 # The static statistics of Part 2 are all functions of the histogram of |x|: no time order involved.
 summary_blind_to_D = summary_static
 
-posterior_blind_to_D, _ = train_and_score(summary_blind_to_D, theta, x)
+posterior_blind_to_D, _ = train_and_score(summary_blind_to_D, theta, x, num_seeds=1)   # one training: no score needed
 check_blind_to_D(posterior_blind_to_D, summary_blind_to_D)
 
 # %% [markdown] tags=["student"]
@@ -526,7 +528,7 @@ print("dynamic statistics, frames shuffled in time:\n", summary_dynamic(shuffled
 def summary_one_lag(x):
     return np.stack([(x[:, 1:] - x[:, :-1]).std(axis=1)], axis=1)        # displacement over 1 frame
 
-posterior_one_lag, _ = train_and_score(summary_one_lag, theta, x)
+posterior_one_lag, _ = train_and_score(summary_one_lag, theta, x, num_seeds=1)
 width_dG, width_logD = posterior_widths(posterior_one_lag, summary_one_lag)
 
 samples_one_lag = posterior_one_lag.sample((10_000,), x=summarize(summary_one_lag, x_o), show_progress_bars=False)
@@ -667,7 +669,7 @@ tu.check_sparse(score_200, score_200_start=score_200_start, score_2000=score)
 # %% [markdown]
 # ### Bonus 3 · An ensemble of posteriors: what does it buy?
 #
-# Train five networks on the same 200 simulations, each with a different `seed`, and combine them with `EnsemblePosterior` from `sbi.inference`. Three steps:
+# Train five networks on the same 200 simulations, each with a different `seed` and with `num_seeds=1` (one network per call), and combine them with `EnsemblePosterior` from `sbi.inference`. Three steps:
 #
 # 1. **Look.** Plot the posterior of the blind trajectory for two single networks and for the ensemble.
 # 2. **Measure the gain.** Score the ensemble on the test set and subtract the mean score of its five members. `tu.log_probs_at_truth(posterior, my_summary)` returns the 200 numbers whose mean is the score, and its docstring says how to combine them for an ensemble. Then do the same with all 2,000 simulations.
@@ -688,7 +690,8 @@ tu.check_sparse(score_200, score_200_start=score_200_start, score_2000=score)
 from sbi.inference import EnsemblePosterior
 
 # Step 1. Five networks on the same 200 simulations: only the random initialisation differs
-members_200, scores_200 = zip(*[train_and_score(my_summary, theta_200, x_200, seed=seed) for seed in range(5)])
+members_200, scores_200 = zip(*[train_and_score(my_summary, theta_200, x_200, seed=seed, num_seeds=1)
+                                for seed in range(5)])
 ensemble = EnsemblePosterior(list(members_200))
 
 s_o = summarize(my_summary, x_o)
@@ -713,7 +716,8 @@ print("200 simulations")
 gain_200 = ensemble_gain(members_200, scores_200)
 
 print("\n2,000 simulations")
-members_2000, scores_2000 = zip(*[train_and_score(my_summary, theta, x, seed=seed, verbose=False) for seed in range(5)])
+members_2000, scores_2000 = zip(*[train_and_score(my_summary, theta, x, seed=seed, num_seeds=1, verbose=False)
+                                  for seed in range(5)])
 gain_2000 = ensemble_gain(members_2000, scores_2000)
 
 tu.check_ensemble(gain_200, gain_2000)
@@ -746,7 +750,7 @@ tu.interval_coverage(list(members_2000), my_summary);
 #
 # **What else the same effort buys.** With the same 200 simulations: an ensemble of five, +0.4. A batch size of 20 (bonus 2), +0.7. Both together, +1.1, which is a fourth way to pass bonus 2. Ten times the simulations, +1.7. An ensemble does not add information about the simulator. It averages over what the training did not pin down. That is cheap here: the simulations are shared, only the training is repeated.
 #
-# One remark on the medals of Part 2: they are for your statistics, scored with a single network. An ensemble on the same statistics scores a little higher (about 0.1 with 2,000 simulations) without any new idea about the data.
+# One remark on the medals of Part 2: they are for your statistics, scored as the mean of three single networks, not as their ensemble. An ensemble on the same statistics scores a little higher (about 0.1 with 2,000 simulations) without any new idea about the data.
 
 # %% [markdown]
 # ### Bonus 4 · Learned summaries: give the network the right raw material
@@ -761,7 +765,7 @@ tu.interval_coverage(list(members_2000), my_summary);
 #
 # **Passes when** the learned summary scores above 2.5.
 #
-# Each training takes about ten seconds. This remains a bonus because learned summaries are in general much more expensive than hand-made statistics: an embedding network that reads the raw trajectory needs many more simulations, and its training takes minutes to hours instead of seconds. The histogram is what makes a learned summary fit into this afternoon.
+# Each network trains in about ten seconds, so a score (three trainings) takes about half a minute. This remains a bonus because learned summaries are in general much more expensive than hand-made statistics: an embedding network that reads the raw trajectory needs many more simulations, and its training takes minutes to hours instead of seconds. The histogram is what makes a learned summary fit into this afternoon.
 
 # %% tags=["student"]
 # Your learned summary
@@ -801,15 +805,15 @@ posterior_positions, score_positions = train_and_score(position_histogram, theta
 posterior_widths(posterior_positions, position_histogram);
 
 # %% [markdown] tags=["solution"]
-# **What we found.** Every row uses the 2,000 simulations of this notebook and the same flow. The scores are from our own runs, the times for two CPU cores.
+# **What we found.** Every row uses the 2,000 simulations of this notebook and the same flow. The scores are from our own runs of single networks, the times for one training on two CPU cores.
 #
-# | Summaries | Score | Training time |
+# | Summaries | Score of one network | Training time |
 # | --- | --- | --- |
 # | sbi's default `CNNEmbedding` on the raw trajectory (two convolution layers) | 0.4 to 0.9 | minutes |
 # | a deeper CNN on the raw trajectory (four convolution layers, the cell below) | 1.5 to 1.9 | 4 minutes |
 # | a five-layer CNN on the raw trajectory | 1.5 | 25 minutes |
 # | a small network on the histogram of positions | 0.6 to 0.7 | 10 seconds |
-# | **a small network on the histogram of transitions** | **3.35 to 3.43** | **10 seconds** |
+# | **a small network on the histogram of transitions** | **3.3 to 3.4** | **10 seconds** |
 # | our eight hand-made statistics | 3.5 | 12 seconds |
 #
 # The deeper CNN needs 10,000 simulations and ten minutes on four cores to reach 3.1.
@@ -838,4 +842,5 @@ def raw_trajectory(x):
     return x           # no statistics: the network sees all 5,000 frames
 
 if RUN_SLOW_BONUS:
-    posterior_cnn, score_cnn = train_and_score(raw_trajectory, theta, x, density_estimator=cnn_estimator())
+    posterior_cnn, score_cnn = train_and_score(raw_trajectory, theta, x, density_estimator=cnn_estimator(),
+                                               num_seeds=1)
