@@ -81,6 +81,26 @@ def test_check_match_tells_right_from_wrong():
     assert not tu.RESULTS["Part 2 · match"]
 
 
+def test_board_counts_three_passes_in_a_row(capsys):
+    x_o = torch.tensor([3.2, -1.1])
+    exact = tu.ExactPosterior(x_o)
+    tu._board.update(num_simulations=None, fingerprint=None, in_a_row=0)
+    for seed in (5, 6):
+        tu.check_match(exact.sample((2000,), seed=seed), 500, x_o)
+    assert "2 of 3 passes in a row with 500 simulations" in capsys.readouterr().out
+    samples = exact.sample((2000,), seed=7)
+    tu.check_match(samples, 500, x_o)
+    assert "For the board: 500 simulations, 3 passes in a row" in capsys.readouterr().out
+    tu.check_match(samples, 500, x_o)  # the same samples once more: not a new run
+    assert "samples of the last check" in capsys.readouterr().out
+    tu.check_match(x_o + torch.randn(2000, 2), 500, x_o)  # a failed run starts the count again
+    assert "0 of 3 passes in a row" in capsys.readouterr().out
+    tu.check_match(exact.sample((2000,), seed=8), 400, x_o)  # and so does another number
+    assert "1 of 3 passes in a row with 400 simulations" in capsys.readouterr().out
+    tu.check_repair(exact.sample((2000,), seed=9), 400, x_o, low=-6, high=6)  # the bonus has no board
+    assert "For the board" not in capsys.readouterr().out
+
+
 def test_check_iid_accepts_the_answer_key_and_rejects_drift():
     x_iid = tu.load_toy_observations()
     n_values = [1, 5, 10, 25, 50, 100]
@@ -218,6 +238,21 @@ def test_dw_check_cells(capsys):
     tu.check_sparse(score_200=-1.3, score_200_start=-2.5, score_2000=-1.0)  # won back, but below bronze
     assert not tu.RESULTS["Bonus · sparse training data"]
 
+    tu.check_ensemble(gain_200=0.41, gain_2000=0.09)  # what we measured
+    assert tu.RESULTS["Bonus · ensemble"]
+    tu.check_ensemble(gain_200=0.15, gain_2000=0.05)  # three times larger, but too small
+    assert not tu.RESULTS["Bonus · ensemble"]
+    tu.check_ensemble(gain_200=0.30, gain_2000=0.20)  # large, but not twice the gain with 2,000
+    assert not tu.RESULTS["Bonus · ensemble"]
+    capsys.readouterr()
+    tu.check_ensemble(gain_200=-0.20, gain_2000=0.05)  # log densities averaged instead of densities
+    assert not tu.RESULTS["Bonus · ensemble"] and "Average the densities" in capsys.readouterr().out
+
+    tu.check_learned_summary(b["learned_score_min"] + 0.1)
+    assert tu.RESULTS["Bonus · learned summaries"]
+    tu.check_learned_summary(1.7)  # a CNN on the raw trajectory
+    assert not tu.RESULTS["Bonus · learned summaries"]
+
     tu.check_wrong_simulator(int(hidden["bonus_tilted_index"]))
     assert tu.RESULTS["Bonus · wrong simulator"]
     tu.check_wrong_simulator((int(hidden["bonus_tilted_index"]) + 1) % 3)
@@ -275,3 +310,56 @@ def test_black_box_never_hangs_and_never_comes_back_short(capsys):
     assert samples.shape == (50, 2)
     assert torch.equal(samples.max(dim=0).values, torch.tensor([1.0, 2.0]))  # moved onto the edge
     assert "no probability inside" in capsys.readouterr().out
+
+
+def test_ensemble_helpers_score_and_cover(capsys):
+    """Two quickly trained networks: the per-trajectory log densities average to the score, the ensemble
+    is not below the mean of its members, and the coverage of a list is that of the pooled samples."""
+    torch.manual_seed(0)
+    theta = tu.dw_prior().sample((200,))
+    x = tu.simulate_double_well(theta, seed=0).numpy()
+    members, scores = zip(*[tu.train_and_score(rs.reference_summary, theta, x, seed=seed, num_seeds=1,
+                                               verbose=False, max_num_epochs=30) for seed in range(2)])
+    log_probs = torch.stack([tu.log_probs_at_truth(m, rs.reference_summary) for m in members])
+    assert log_probs.shape == (2, 200)
+    assert np.allclose(log_probs.mean(dim=1).numpy(), scores, atol=1e-4)
+    score_ensemble = (torch.logsumexp(log_probs, dim=0) - np.log(2)).mean().item()
+    assert score_ensemble >= np.mean(scores) - 1e-6
+
+    wide = tu.interval_coverage(members[0], rs.reference_summary, level=0.9, num_samples=100)
+    narrow = tu.interval_coverage(members[0], rs.reference_summary, level=0.5, num_samples=100, verbose=False)
+    assert all(0.0 <= c <= 1.0 for c in wide + narrow) and all(w >= n for w, n in zip(wide, narrow))
+    assert "single network" in capsys.readouterr().out
+    both = tu.interval_coverage(list(members), rs.reference_summary, level=0.9, num_samples=100)
+    assert "ensemble of 2" in capsys.readouterr().out and all(0.0 <= c <= 1.0 for c in both)
+
+
+def test_score_is_the_mean_of_three_trainings_and_the_posterior_the_first(monkeypatch):
+    """The medal score averages three independent trainings, also when the builder holds an embedding
+    network, and the posterior returned is that of the first."""
+    from sbi.neural_nets import posterior_nn
+    from sbi.neural_nets.embedding_nets import FCEmbedding
+
+    torch.manual_seed(0)
+    theta = tu.dw_prior().sample((200,))
+    x = tu.simulate_double_well(theta, seed=0).numpy()
+
+    def builder():
+        torch.manual_seed(1)  # the same untrained embedding network every time
+        embedding = FCEmbedding(input_dim=8, output_dim=4, num_layers=1, num_hiddens=16)
+        return posterior_nn("nsf", num_transforms=1, embedding_net=embedding, z_score_x="structured")
+
+    settings = dict(verbose=False, max_num_epochs=20)
+    singles = [tu.train_and_score(rs.reference_summary, theta, x, seed=seed, num_seeds=1,
+                                  density_estimator=builder(), **settings) for seed in range(3)]
+    first, score = tu.train_and_score(rs.reference_summary, theta, x, num_seeds=3,
+                                      density_estimator=builder(), **settings)
+    assert score == pytest.approx(np.mean([s for _, s in singles]), abs=1e-4)
+    single_log_probs = tu.log_probs_at_truth(singles[0][0], rs.reference_summary)
+    assert torch.allclose(tu.log_probs_at_truth(first, rs.reference_summary), single_log_probs, atol=1e-4)
+
+    # Without the copies, the second training would start from the embedding network the first trained
+    monkeypatch.setattr(tu, "_untrained_copy", lambda density_estimator: density_estimator)
+    _, score_shared = tu.train_and_score(rs.reference_summary, theta, x, num_seeds=2,
+                                         density_estimator=builder(), **settings)
+    assert score_shared != pytest.approx(np.mean([s for _, s in singles[:2]]), abs=1e-4)

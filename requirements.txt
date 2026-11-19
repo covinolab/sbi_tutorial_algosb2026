@@ -1,0 +1,5 @@
+# Running the notebooks without Colab: see INSTALL.md.
+# On Linux, install the CPU build of PyTorch first (INSTALL.md, step 2).
+sbi==0.27.0
+jupyterlab
+ipywidgets

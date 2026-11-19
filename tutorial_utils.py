@@ -12,9 +12,12 @@ Contents
 """
 
 import contextlib
+import copy
+import functools
 import io
 import json
 import pickle
+import types
 import warnings
 from pathlib import Path
 
@@ -303,8 +306,17 @@ def mismatch_score(samples, reference_samples):
     return c2st(samples[:n], reference_samples[:n], seed=0).item()
 
 
+BOARD_RUNS = 3  # Part 2's board counts a number of simulations after this many passes in a row
+_board = {"num_simulations": None, "fingerprint": None, "in_a_row": 0}
+
+
 def check_match(samples, num_simulations, x_o, low=TOY_LOW, high=TOY_HIGH, key="Part 2 · match"):
-    """Part 2. Do samples of your posterior match samples of the answer key?"""
+    """Part 2. Do samples of your posterior match samples of the answer key?
+
+    For the board of Part 2, a number of simulations counts once it has passed three runs
+    in a row: simulate, train and sample again, with the same number of simulations, and
+    check again. A single pass with few simulations can be luck.
+    """
     b = load_benchmarks()["toy"]
     samples = _as_tensor(samples, "samples")
     if samples.ndim != 2 or samples.shape[1] != 2 or len(samples) < 1000:
@@ -313,9 +325,31 @@ def check_match(samples, num_simulations, x_o, low=TOY_LOW, high=TOY_HIGH, key="
         return
     exact = ExactPosterior(x_o, low=low, high=high)
     score = mismatch_score(samples, exact.sample((2000,), seed=1))
-    _report(key, score <= b["c2st_max"],
+    passed = score <= b["c2st_max"]
+    _report(key, passed,
             f"mismatch score {score:.2f} (target ≤ {b['c2st_max']}) "
             f"with {int(num_simulations):,} simulations")
+    if key == "Part 2 · match":
+        _count_for_the_board(samples, int(num_simulations), passed)
+
+
+def _count_for_the_board(samples, num_simulations, passed):
+    """Count the passes in a row with the same number of simulations (Part 2's board)."""
+    fingerprint = hash(samples.detach().cpu().numpy().tobytes())
+    if fingerprint == _board["fingerprint"]:
+        print("    For the board: these are the samples of the last check. "
+              "Run the training cell again for a new run.")
+        return
+    if num_simulations != _board["num_simulations"]:
+        _board.update(num_simulations=num_simulations, in_a_row=0)
+    _board["fingerprint"] = fingerprint
+    _board["in_a_row"] = _board["in_a_row"] + 1 if passed else 0
+    in_a_row = _board["in_a_row"]
+    if in_a_row >= BOARD_RUNS:
+        print(f"    🗣 For the board: {num_simulations:,} simulations, {in_a_row} passes in a row.")
+    else:
+        print(f"    For the board: {in_a_row} of {BOARD_RUNS} passes in a row with "
+              f"{num_simulations:,} simulations.")
 
 
 class BlackBox:
@@ -572,7 +606,7 @@ def summarize(summary, x):
     return torch.from_numpy(s)
 
 
-def train_and_score(summary, theta, x, seed=0, density_estimator=None, verbose=True,
+def train_and_score(summary, theta, x, seed=0, num_seeds=3, density_estimator=None, verbose=True,
                     **train_kwargs):
     """Train NPE on your summary statistics and score it on the common test set.
 
@@ -583,10 +617,17 @@ def train_and_score(summary, theta, x, seed=0, density_estimator=None, verbose=T
         score                                      average log posterior density at the
                                                    true parameters of 200 test trajectories
 
+    A single training is partly luck: retrained with another seed, the same statistics
+    score a few hundredths to a tenth or two differently. So the network is trained
+    `num_seeds` times, with the seeds seed, seed + 1, ..., and the score is the mean of
+    their scores. The posterior returned is the one of the first training.
+
     Args:
         summary: your function, NumPy array (n, 5000) -> NumPy array (n, n_statistics).
         theta, x: the training set, parameters (n, 2) and raw trajectories (n, 5000).
-        seed: seed of the network initialisation and the training.
+        seed: seed of the network initialisation and the training of the first network.
+        num_seeds: number of trainings the score is averaged over. num_seeds=1 trains one
+            network, enough where only the posterior is needed.
         density_estimator: "maf", "nsf", "mdn", or a builder from sbi.neural_nets.posterior_nn.
             The default is a small neural spline flow: posterior_nn("nsf", num_transforms=2).
         train_kwargs: passed on to sbi's .train(), e.g. training_batch_size=50.
@@ -606,19 +647,55 @@ def train_and_score(summary, theta, x, seed=0, density_estimator=None, verbose=T
     theta_test, x_test = load_test_set()
     s_test = summarize(summary, x_test)
 
-    torch.manual_seed(seed)
-    with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):  # sbi's own chatter
-        warnings.simplefilter("ignore")
-        inference = NPE(prior=dw_prior(), density_estimator=density_estimator,
-                        show_progress_bars=False)
-        inference.append_simulations(theta, s).train(**train_kwargs)
-        posterior = inference.build_posterior()
-        log_probs = posterior.log_prob_batched(theta_test[None], x=s_test, norm_posterior=False)
-    score = log_probs.mean().item()
+    # Copies are taken before any training: every training starts from untrained networks
+    builders = [density_estimator] + [_untrained_copy(density_estimator) for _ in range(num_seeds - 1)]
+    posteriors, scores, epochs = [], [], []
+    for k, builder in enumerate(builders):
+        torch.manual_seed(seed + k)
+        with warnings.catch_warnings(), contextlib.redirect_stdout(io.StringIO()):  # sbi's own chatter
+            warnings.simplefilter("ignore")
+            inference = NPE(prior=dw_prior(), density_estimator=builder, show_progress_bars=False)
+            inference.append_simulations(theta, s).train(**train_kwargs)
+            posterior = inference.build_posterior()
+            log_probs = posterior.log_prob_batched(theta_test[None], x=s_test, norm_posterior=False)
+        posteriors.append(posterior)
+        scores.append(log_probs.mean().item())
+        epochs.append(inference.epoch)
+    score = float(np.mean(scores))
     if verbose:
-        print(f"score = {score:.2f}   ({s.shape[1]} statistics, {len(theta):,} simulations, "
-              f"{inference.epoch} epochs)")
-    return posterior, score
+        if num_seeds == 1:
+            trainings = f"{epochs[0]} epochs"
+        else:
+            trainings = (f"mean of {num_seeds} trainings: " + ", ".join(f"{v:.2f}" for v in scores)
+                         + f"; {min(epochs)} to {max(epochs)} epochs")
+        print(f"score = {score:.2f}   ({s.shape[1]} statistics, {len(theta):,} simulations, {trainings})")
+    return posteriors[0], score
+
+
+def _untrained_copy(density_estimator):
+    """A copy of a density-estimator builder that shares no network with the original.
+
+    A builder from posterior_nn keeps the modules it was given, an embedding network for
+    example, and hands the very same module to every network it builds. Trained three
+    times, the second and third trainings would start from the embedding network that the
+    first one trained, and the three scores would not be independent.
+    """
+    if isinstance(density_estimator, functools.partial):
+        return copy.deepcopy(density_estimator)
+    if not isinstance(density_estimator, types.FunctionType) or not density_estimator.__closure__:
+        return density_estimator  # a name like "nsf": sbi builds new networks from it every time
+
+    def copied(cell):
+        try:
+            return types.CellType(copy.deepcopy(cell.cell_contents))
+        except ValueError:  # an empty cell
+            return types.CellType()
+
+    clone = types.FunctionType(density_estimator.__code__, density_estimator.__globals__,
+                               density_estimator.__name__, density_estimator.__defaults__,
+                               tuple(copied(cell) for cell in density_estimator.__closure__))
+    clone.__kwdefaults__ = copy.deepcopy(density_estimator.__kwdefaults__)
+    return clone
 
 
 def posterior_widths(posterior, summary, verbose=True):
@@ -801,6 +878,86 @@ def check_sparse(score_200, score_200_start, score_2000):
             f"score {score_200:.2f} with 200 simulations: {recovered:.0%} of the drop from "
             f"{score_2000:.2f} to {score_200_start:.2f} won back (target: at least 50%, and above "
             f"bronze, {b['score_bronze']:.2f})")
+
+
+def log_probs_at_truth(posterior, summary):
+    """Log posterior density at the true parameters, one number per test trajectory.
+
+    The score of train_and_score is the mean of these 200 numbers. To score an ensemble,
+    average the DENSITIES of its members, not their logarithms: for members with log
+    densities `log_probs` of shape (n_members, 200),
+        torch.logsumexp(log_probs, dim=0) - np.log(n_members)
+    is the log density of the equal-weight mixture, per test trajectory.
+    """
+    theta_test, x_test = load_test_set()
+    s_test = summarize(summary, x_test)
+    with warnings.catch_warnings(), torch.no_grad():
+        warnings.simplefilter("ignore")
+        return posterior.log_prob_batched(theta_test[None], x=s_test, norm_posterior=False)[0]
+
+
+def interval_coverage(posteriors, summary, level=0.5, num_samples=200, verbose=True):
+    """How often does the central interval of the posterior contain the true parameter?
+
+    For each of the 200 test trajectories, the central `level` interval of each parameter
+    is taken from posterior samples and compared with the true value. A posterior that
+    states its uncertainty correctly gives `level`; more means its intervals are wider
+    than they need to be, less means it is overconfident. With 200 test trajectories the
+    answer is uncertain by about 0.035 at level 0.5 and 0.02 at level 0.9.
+
+    Args:
+        posteriors: one posterior, or a list of posteriors. A list is treated as their
+            equal-weight ensemble: the same number of samples from every member, pooled.
+        summary: the summary function the posterior(s) were trained with.
+
+    Returns:
+        coverage of ΔG‡, coverage of log D.
+    """
+    members = list(posteriors) if isinstance(posteriors, (list, tuple)) else [posteriors]
+    theta_test, x_test = load_test_set()
+    s_test = summarize(summary, x_test)
+    tail = (1.0 - level) / 2.0
+    inside = []
+    for s_o, truth in zip(s_test, theta_test):
+        samples = torch.cat([_sample_inside_prior(m, num_samples, s_o, time_limit=0.5)[0]
+                             for m in members])
+        q = torch.quantile(samples, torch.tensor([tail, 1.0 - tail]), dim=0)
+        inside.append((truth >= q[0]) & (truth <= q[1]))
+    coverage = torch.stack(inside).float().mean(dim=0)
+    if verbose:
+        what = f"ensemble of {len(members)}" if len(members) > 1 else "single network"
+        print(f"{what}: the {level:.0%} interval contains the truth in "
+              f"{coverage[0]:.0%} (ΔG‡) and {coverage[1]:.0%} (log D) of the test trajectories")
+    return coverage[0].item(), coverage[1].item()
+
+
+def check_ensemble(gain_200, gain_2000):
+    """Bonus. The ensemble gains more where the training pinned the networks down less.
+
+    Args:
+        gain_200: score of the ensemble minus the mean score of its members, 200 simulations.
+        gain_2000: the same with 2,000 simulations.
+    """
+    b = load_benchmarks()["double_well"]
+    if gain_200 < -1e-6 or gain_2000 < -1e-6:
+        _report("Bonus · ensemble", False,
+                "a gain is negative: the score of an ensemble cannot be below the mean score of "
+                "its members. Average the densities, not the log densities (see tu.log_probs_at_truth)")
+        return
+    passed = (gain_200 > b["ensemble_gain_min"]
+              and gain_200 >= b["ensemble_gain_ratio_min"] * gain_2000)
+    _report("Bonus · ensemble", passed,
+            f"the ensemble gains {gain_200:.2f} with 200 simulations and {gain_2000:.2f} with 2,000 "
+            f"(target: more than {b['ensemble_gain_min']} with 200, and at least "
+            f"{b['ensemble_gain_ratio_min']:.0f} times the gain with 2,000)")
+
+
+def check_learned_summary(score):
+    """Bonus. A learned summary that beats what a CNN on the raw trajectory reaches here."""
+    b = load_benchmarks()["double_well"]
+    _report("Bonus · learned summaries", score > b["learned_score_min"],
+            f"score {score:.2f} with a learned summary (target > {b['learned_score_min']}; our "
+            f"hand-made statistics reach {b['score_reference']:.2f})")
 
 
 class FallbackPosterior:
