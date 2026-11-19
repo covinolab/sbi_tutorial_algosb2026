@@ -5,6 +5,7 @@ __pycache__/
 .vscode/
 .DS_Store
 sbi-logs/
+.venv/
 # local scratch
 scratch/
 *.tmp

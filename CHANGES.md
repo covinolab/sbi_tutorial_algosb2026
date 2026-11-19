@@ -34,3 +34,9 @@ The repository as it was before these changes is tagged `before-changes-2026-11-
 **What changed.** The check of Part 2 counts the passes in a row with the same number of simulations and prints the count under its verdict. The board asks for the lowest number of simulations that passes three runs in a row. Checking the same samples twice does not count as a new run, and the repair bonus, which reuses the check, has no board. The challenge itself still passes with a single pass. The solutions show how often each density estimator passed in our runs, and a new test covers the count.
 
 **Why.** Near the record a pass is partly luck. In ten runs per setting, each with new simulations and a new training, the mixture density network passed 2 times with 100 simulations, 9 times with 200, 7 times with 500, and every time from 1,000 on. A record set by a single pass rewards the luckiest run rather than the best setting. The solutions also no longer say that this network "often passes with about 100".
+
+## Running the notebooks without Colab
+
+**What changed.** `INSTALL.md` sets up a virtual environment for Linux, macOS and Windows in a few commands, from `requirements.txt` (sbi 0.27.0, JupyterLab, ipywidgets). On Linux it installs the CPU build of PyTorch first. The README points to it, lists the new files and gives the current run times, and git ignores `.venv/`.
+
+**Why.** Some students may not reach Colab. On Linux, `pip install sbi` alone pulls the CUDA build of PyTorch with its NVIDIA libraries, several gigabytes; the CPU build is all these notebooks need. ipywidgets draws sbi's progress bars in Jupyter. Tested on Linux from a fresh clone with Python 3.10 and 3.12: the installation takes about a minute and 1.6 GB, and all tests pass in both, including the four notebooks from top to bottom (about 13 minutes).

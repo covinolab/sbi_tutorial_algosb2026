@@ -13,12 +13,14 @@ Each notebook takes 75 minutes. Every part is a challenge with a check cell that
 
 **On Google Colab (recommended).** Click a button above. The first code cell installs `sbi` and fetches this repository. A free CPU runtime is enough; no GPU is needed.
 
-**On your own machine.** You need Python 3.10 or newer.
+**On your own machine.** You need Python 3.10 or newer. [INSTALL.md](INSTALL.md) sets up a virtual environment in a few commands, for Linux, macOS and Windows:
 
 ```bash
 git clone https://github.com/covinolab/sbi_tutorial_algosb2026.git
 cd sbi_tutorial_algosb2026
-pip install sbi==0.27.0 jupyterlab
+python3 -m venv .venv && source .venv/bin/activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu   # Linux only
+pip install -r requirements.txt
 jupyter lab
 ```
 
@@ -34,6 +36,9 @@ solutions/                  both notebooks with every challenge solved and expla
 reference/                  for the instructors: scripts that produce data/ and the notebooks,
                             and our reference summary statistics for Notebook 2
 tests/                      unit tests, and a test that executes all four notebooks
+INSTALL.md                  running the notebooks without Colab
+requirements.txt            the packages INSTALL.md installs
+CHANGES.md                  what changed since 14 November 2026, and why
 ```
 
 Stuck on a challenge? Ask an instructor first. The worked answers in `solutions/` give the reasoning, not only the code.
@@ -46,7 +51,7 @@ Everything below is for whoever maintains or teaches the tutorial.
 
 ```bash
 python reference/build_notebooks.py                    # the four notebooks, without outputs
-python reference/build_notebooks.py --run-solutions    # also execute the two solutions notebooks (12 minutes)
+python reference/build_notebooks.py --run-solutions    # also execute the two solutions notebooks (about 12 minutes on two CPU cores)
 ```
 
 The student notebooks ship without outputs. The solutions notebooks ship executed. Two bonus answers train for several minutes each and sit behind a `RUN_SLOW_BONUS` switch in the solutions notebooks. The one of Notebook 1 is on, and the tests switch it off. The one of Notebook 2 (a CNN on the raw trajectory) is off: it is kept for reference, and the bonus itself uses a learned summary that trains in seconds.
@@ -64,8 +69,8 @@ The networks are pickled, so run the scripts with the `sbi` version the notebook
 
 ```bash
 pip install pytest nbclient ipykernel
-pytest tests/test_utils.py -q             # 20 seconds
-pytest tests/test_notebooks.py -q -s      # executes all four notebooks, about 6 minutes
+pytest tests/test_utils.py -q             # about a minute
+pytest tests/test_notebooks.py -q -s      # executes all four notebooks, about 12 minutes
 ```
 
 The notebook test checks that the student notebooks run from top to bottom with every challenge still open, and that the solutions notebooks pass every check. With `-s` it prints the slowest cells.
