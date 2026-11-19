@@ -218,6 +218,21 @@ def test_dw_check_cells(capsys):
     tu.check_sparse(score_200=-1.3, score_200_start=-2.5, score_2000=-1.0)  # won back, but below bronze
     assert not tu.RESULTS["Bonus · sparse training data"]
 
+    tu.check_ensemble(gain_200=0.41, gain_2000=0.09)  # what we measured
+    assert tu.RESULTS["Bonus · ensemble"]
+    tu.check_ensemble(gain_200=0.15, gain_2000=0.05)  # three times larger, but too small
+    assert not tu.RESULTS["Bonus · ensemble"]
+    tu.check_ensemble(gain_200=0.30, gain_2000=0.20)  # large, but not twice the gain with 2,000
+    assert not tu.RESULTS["Bonus · ensemble"]
+    capsys.readouterr()
+    tu.check_ensemble(gain_200=-0.20, gain_2000=0.05)  # log densities averaged instead of densities
+    assert not tu.RESULTS["Bonus · ensemble"] and "Average the densities" in capsys.readouterr().out
+
+    tu.check_learned_summary(b["learned_score_min"] + 0.1)
+    assert tu.RESULTS["Bonus · learned summaries"]
+    tu.check_learned_summary(1.7)  # a CNN on the raw trajectory
+    assert not tu.RESULTS["Bonus · learned summaries"]
+
     tu.check_wrong_simulator(int(hidden["bonus_tilted_index"]))
     assert tu.RESULTS["Bonus · wrong simulator"]
     tu.check_wrong_simulator((int(hidden["bonus_tilted_index"]) + 1) % 3)
@@ -275,3 +290,25 @@ def test_black_box_never_hangs_and_never_comes_back_short(capsys):
     assert samples.shape == (50, 2)
     assert torch.equal(samples.max(dim=0).values, torch.tensor([1.0, 2.0]))  # moved onto the edge
     assert "no probability inside" in capsys.readouterr().out
+
+
+def test_ensemble_helpers_score_and_cover(capsys):
+    """Two quickly trained networks: the per-trajectory log densities average to the score, the ensemble
+    is not below the mean of its members, and the coverage of a list is that of the pooled samples."""
+    torch.manual_seed(0)
+    theta = tu.dw_prior().sample((200,))
+    x = tu.simulate_double_well(theta, seed=0).numpy()
+    members, scores = zip(*[tu.train_and_score(rs.reference_summary, theta, x, seed=seed, verbose=False,
+                                               max_num_epochs=30) for seed in range(2)])
+    log_probs = torch.stack([tu.log_probs_at_truth(m, rs.reference_summary) for m in members])
+    assert log_probs.shape == (2, 200)
+    assert np.allclose(log_probs.mean(dim=1).numpy(), scores, atol=1e-4)
+    score_ensemble = (torch.logsumexp(log_probs, dim=0) - np.log(2)).mean().item()
+    assert score_ensemble >= np.mean(scores) - 1e-6
+
+    wide = tu.interval_coverage(members[0], rs.reference_summary, level=0.9, num_samples=100)
+    narrow = tu.interval_coverage(members[0], rs.reference_summary, level=0.5, num_samples=100, verbose=False)
+    assert all(0.0 <= c <= 1.0 for c in wide + narrow) and all(w >= n for w, n in zip(wide, narrow))
+    assert "single network" in capsys.readouterr().out
+    both = tu.interval_coverage(list(members), rs.reference_summary, level=0.9, num_samples=100)
+    assert "ensemble of 2" in capsys.readouterr().out and all(0.0 <= c <= 1.0 for c in both)

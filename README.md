@@ -49,7 +49,7 @@ python reference/build_notebooks.py                    # the four notebooks, wit
 python reference/build_notebooks.py --run-solutions    # also execute the two solutions notebooks (12 minutes)
 ```
 
-The student notebooks ship without outputs. The solutions notebooks ship executed. Two bonus answers train for several minutes each; they sit behind `RUN_SLOW_BONUS = True` in the solutions notebooks, and the tests switch them off.
+The student notebooks ship without outputs. The solutions notebooks ship executed. Two bonus answers train for several minutes each and sit behind a `RUN_SLOW_BONUS` switch in the solutions notebooks. The one of Notebook 1 is on, and the tests switch it off. The one of Notebook 2 (a CNN on the raw trajectory) is off: it is kept for reference, and the bonus itself uses a learned summary that trains in seconds.
 
 **The data are generated.** Two scripts simulate the data in `data/`, train the networks that are handed to the students, and measure the benchmark targets. Each fixes its seeds and ends on a printed check of our reference solution against every benchmark.
 

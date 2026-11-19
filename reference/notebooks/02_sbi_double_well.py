@@ -561,7 +561,7 @@ tu.scorecard()
 # **Next steps for real data.**
 #
 # - **A measurement model.** In a force-spectroscopy experiment you do not see the molecule. You see a bead attached to it by a flexible linker, and the bead has its own diffusion coefficient. Put the linker and the instrument noise into the simulator, and the same workflow infers the molecular parameters through them. This is the model of the lecture and of the [reference notebook](https://github.com/covinolab/sbi_for_smfe_tutorial).
-# - **Learned summaries.** Instead of inventing statistics, let an embedding network learn them from the raw trajectory together with the posterior (bonus 4 below). It needs more simulations and finds statistics nobody thought of.
+# - **Learned summaries.** Instead of inventing statistics, let an embedding network learn them together with the posterior (bonus 4 below). On raw data that needs many more simulations and much longer training, and it can find statistics nobody thought of.
 # - **Sequential rounds.** If you care about one observation only, simulate where its posterior is: train, sample parameters from the posterior of your observation, simulate there, retrain. Fewer simulations, at the price of a network that is good for this one observation only.
 # - **Checks without an answer key.** Coverage (Notebook 1, Part 4) and posterior predictive checks (bonus 1 below) work on any simulator.
 
@@ -665,61 +665,168 @@ tu.check_sparse(score_200, score_200_start=score_200_start, score_2000=score)
 # The remaining gap to 3.5 is the price of 1,800 simulations. The lesson for expensive simulators: the fewer simulations you have, the more of the work your statistics have to do.
 #
 # %% [markdown]
-# ### Bonus 3 · An ensemble of posteriors
+# ### Bonus 3 · An ensemble of posteriors: what does it buy?
 #
-# Train five networks on the same 200 simulations, each with a different `seed`, and combine them with `EnsemblePosterior` from `sbi.inference`. There is no score here: look at what happens to the posterior of the blind trajectory when the ensemble replaces a single network.
+# Train five networks on the same 200 simulations, each with a different `seed`, and combine them with `EnsemblePosterior` from `sbi.inference`. Three steps:
+#
+# 1. **Look.** Plot the posterior of the blind trajectory for two single networks and for the ensemble.
+# 2. **Measure the gain.** Score the ensemble on the test set and subtract the mean score of its five members. `tu.log_probs_at_truth(posterior, my_summary)` returns the 200 numbers whose mean is the score, and its docstring says how to combine them for an ensemble. Then do the same with all 2,000 simulations.
+# 3. **Check the intervals.** `tu.interval_coverage(posterior_or_list, my_summary)` tells you how often the 50% interval contains the truth on the test set, for one network and for the list of five.
+#
+# **Passes when** the ensemble gains more than 0.2 with 200 simulations, and at least twice what it gains with 2,000.
+#
+# Five trainings on 200 simulations take about ten seconds, five on 2,000 about a minute.
 
 # %% tags=["student"]
 # Your ensemble
 
+
+
+# tu.check_ensemble(gain_200=..., gain_2000=...)
+
 # %% tags=["solution"]
 from sbi.inference import EnsemblePosterior
 
-# Five networks on the same 200 simulations: only the random initialisation differs
-members, member_scores = zip(*[train_and_score(my_summary, theta_200, x_200, seed=seed) for seed in range(5)])
-ensemble = EnsemblePosterior(list(members))
+# Step 1. Five networks on the same 200 simulations: only the random initialisation differs
+members_200, scores_200 = zip(*[train_and_score(my_summary, theta_200, x_200, seed=seed) for seed in range(5)])
+ensemble = EnsemblePosterior(list(members_200))
 
 s_o = summarize(my_summary, x_o)
-samples_members = [m.sample((5000,), x=s_o, show_progress_bars=False) for m in members[:2]]
+samples_members = [m.sample((5000,), x=s_o, show_progress_bars=False) for m in members_200[:2]]
 samples_ensemble = ensemble.sample((5000,), x=s_o)
 
 plot_posteriors(samples_members + [samples_ensemble], ["network 1", "network 2", "ensemble of five"],
                 truth=truth, truth_label="hidden truth", limits=LIMITS, axis_labels=LABELS);
 
 # %% tags=["solution"]
-# Not asked for, but telling: the score of the ensemble. Its density is the average of the five densities.
-theta_test, x_test = tu.load_test_set()
-s_test = summarize(my_summary, x_test)
-log_probs = torch.stack([m.log_prob_batched(theta_test[None], x=s_test, norm_posterior=False)[0]
-                         for m in members])                                  # shape (5, 200)
-score_ensemble = (torch.logsumexp(log_probs, dim=0) - np.log(len(members))).mean().item()
-print("single networks:", ", ".join(f"{score:.2f}" for score in member_scores))
-print(f"ensemble of five: {score_ensemble:.2f}")
+# Step 2. The density of the ensemble is the average of the five densities.
+def ensemble_gain(members, scores):
+    """Score of the ensemble minus the mean score of its members."""
+    log_probs = torch.stack([tu.log_probs_at_truth(m, my_summary) for m in members])     # shape (5, 200)
+    score_ensemble = (torch.logsumexp(log_probs, dim=0) - np.log(len(members))).mean().item()
+    gain = score_ensemble - np.mean(scores)
+    print("single networks:", ", ".join(f"{s:.2f}" for s in scores), f"   mean {np.mean(scores):.2f}")
+    print(f"ensemble of {len(members)}: {score_ensemble:.2f}   gain {gain:.2f}")
+    return gain
+
+print("200 simulations")
+gain_200 = ensemble_gain(members_200, scores_200)
+
+print("\n2,000 simulations")
+members_2000, scores_2000 = zip(*[train_and_score(my_summary, theta, x, seed=seed, verbose=False) for seed in range(5)])
+gain_2000 = ensemble_gain(members_2000, scores_2000)
+
+tu.check_ensemble(gain_200, gain_2000)
+
+# %% tags=["solution"]
+# Step 3. Does the 50% interval contain the truth for half of the test trajectories?
+print("200 simulations")
+tu.interval_coverage(members_200[0], my_summary)
+tu.interval_coverage(list(members_200), my_summary)
+print("\n2,000 simulations")
+tu.interval_coverage(members_2000[0], my_summary)
+tu.interval_coverage(list(members_2000), my_summary);
 
 # %% [markdown] tags=["solution"]
-# **What happens.** Five networks trained on the same 200 simulations, differing only in their random initialisation, give five different posteriors for the same trajectory: different centres, different tails. Each of them alone is a confident answer. Their disagreement shows that 200 simulations do not determine the network.
+# **What happens.** Five networks trained on the same 200 simulations, differing only in their random initialisation, give five different posteriors for the same trajectory. Each of them alone is a confident answer. Their disagreement shows that 200 simulations do not determine the network.
 #
-# The ensemble is the equal-weight mixture of the five. Where the members agree, it stays sharp. Where a single member puts probability that the others do not, that probability is divided by five. So the ensemble keeps the common core and thins out the idiosyncratic tails of each member.
+# The ensemble is the equal-weight mixture of the five. Its score cannot be below the mean score of its members: the logarithm of an average is at least the average of the logarithms. *How far* above it is measures how much the members differ. Our own runs, ten networks per row and every group of five that ten networks allow:
 #
-# On the test set the ensemble scores higher than every one of its members. That it cannot score lower than their average is a mathematical fact (the logarithm of an average is at least the average of the logarithms). That it beats the best one is the gain from averaging out five different overfits.
+# | Training | One network | Ensemble of five | Gain over the mean of its members |
+# | --- | --- | --- | --- |
+# | 200 simulations | 1.83 (1.26 to 2.21) | 2.24 (2.01 to 2.41) | 0.41 (0.35 to 0.47) |
+# | 200 simulations, batch size 20 | 2.54 (1.76 to 2.98) | 2.94 (2.69 to 3.11) | 0.40 (0.29 to 0.52) |
+# | 2,000 simulations | 3.52 (3.37 to 3.60) | 3.61 (3.56 to 3.65) | 0.09 (0.07 to 0.11) |
 #
-# An ensemble does not add information about the simulator. It averages over what the training did not pin down. That is cheap here: the simulations are shared, only the training is repeated.
+# With ten times the simulations the gain falls to a quarter. The larger training set pins the network down, and less is left to average over. Most of the gain comes early: with 200 simulations one network scores 1.83 on average, two 2.08, three 2.17, five 2.24, ten 2.29.
+#
+# **Does the ensemble beat its best member?** Usually, not always: in 85% of the groups of five with 200 simulations, in 69% with a batch size of 20. Only "not below the mean" is guaranteed.
+#
+# **Wider, not sharper.** A mixture of posteriors that peak in slightly different places is wider than each of them. In our runs with 200 simulations, the 90% intervals of single networks contained the truth for 90% of the test trajectories on average, with a spread from 86% to 94% between networks, and those of the ensembles for 93% to 97%. At the 50% level it was 57% for single networks (48% to 66%) and 60% to 66% for the ensembles. With a batch size of 20 the single networks were slightly overconfident (88% and 47%) and the ensembles again too wide (95% and 55%). The ensemble is the safer answer, not the more precise one. And from one network alone you cannot tell on which side it errs.
+#
+# **What else the same effort buys.** With the same 200 simulations: an ensemble of five, +0.4. A batch size of 20 (bonus 2), +0.7. Both together, +1.1, which is a fourth way to pass bonus 2. Ten times the simulations, +1.7. An ensemble does not add information about the simulator. It averages over what the training did not pin down. That is cheap here: the simulations are shared, only the training is repeated.
+#
+# One remark on the medals of Part 2: they are for your statistics, scored with a single network. An ensemble on the same statistics scores a little higher (about 0.1 with 2,000 simulations) without any new idea about the data.
 
 # %% [markdown]
-# ### Bonus 4 · Learned summaries
+# ### Bonus 4 · Learned summaries: give the network the right raw material
 #
-# Let a network invent the statistics. `CNNEmbedding` in `sbi.neural_nets.embedding_nets` is a 1D convolutional network that takes the raw trajectory and returns a summary vector; `posterior_nn(model="nsf", embedding_net=...)` puts it in front of the density estimator, and the two are trained together.
+# Let a network invent the statistics. An *embedding network* sits in front of the density estimator, `posterior_nn(model="nsf", embedding_net=...)`, and the two are trained together.
 #
-# Beat your own score with a learned embedding. This one is open-ended and hard: with 2,000 simulations a CNN stays far below good hand-made statistics, so simulate more. Training takes minutes, not seconds.
+# The obvious input is the raw trajectory, 5,000 numbers. Here that works badly and is slow (the table in the solutions has the numbers): the network has to find out by itself what in a trajectory matters. So help it with one fact you know. **The trajectory is a Markov chain:** the next frame depends on the present one only. Everything the trajectory says about the parameters is then in how often it steps from one position to another.
+#
+# 1. **Count the transitions.** Write `transition_histogram(x)`: for each trajectory the 2D histogram of (position now, position one frame later), 24 by 24 bins between −2 and 2, divided by the number of steps. For one trajectory `row`, `np.histogram2d(row[:-1], row[1:], bins=24, range=[[-2, 2], [-2, 2]])[0]` does the counting. Return one row of 576 numbers per trajectory.
+# 2. **Let a network read it.** Put `FCEmbedding(input_dim=576, output_dim=8, num_layers=2, num_hiddens=64)` from `sbi.neural_nets.embedding_nets` in front of the flow, and train with `train_and_score(transition_histogram, theta, x, density_estimator=...)`. A histogram is one object, not 576 unrelated inputs: with `z_score_x="structured"` in `posterior_nn`, sbi standardizes it with a single mean and a single standard deviation.
+# 3. **Take the dynamics away.** Do the same with the histogram of positions alone (`np.histogram`, 24 numbers) and look at `posterior_widths`.
+#
+# **Passes when** the learned summary scores above 2.5.
+#
+# Each training takes about ten seconds. This remains a bonus because learned summaries are in general much more expensive than hand-made statistics: an embedding network that reads the raw trajectory needs many more simulations, and its training takes minutes to hours instead of seconds. The histogram is what makes a learned summary fit into this afternoon.
 
 # %% tags=["student"]
-# Your embedding network
+# Your learned summary
+
+
+
+# tu.check_learned_summary(score_learned)
 
 # %% tags=["solution"]
 from sbi.neural_nets import posterior_nn
+from sbi.neural_nets.embedding_nets import FCEmbedding
+
+BINS = 24
+
+def transition_histogram(x):
+    """How often does the trajectory step from one position bin to another? 24 * 24 frequencies per trajectory."""
+    counts = [np.histogram2d(row[:-1], row[1:], bins=BINS, range=[[-2, 2], [-2, 2]])[0].ravel() for row in x]
+    return np.stack(counts) / (x.shape[1] - 1)
+
+def learned_estimator(input_dim):
+    """A small fully connected network turns the histogram into 8 learned statistics for the flow."""
+    embedding_net = FCEmbedding(input_dim=input_dim, output_dim=8, num_layers=2, num_hiddens=64)
+    return posterior_nn("nsf", num_transforms=2, embedding_net=embedding_net, z_score_x="structured")
+
+posterior_learned, score_learned = train_and_score(transition_histogram, theta, x,
+                                                   density_estimator=learned_estimator(BINS * BINS))
+posterior_widths(posterior_learned, transition_histogram)
+tu.check_learned_summary(score_learned)
+
+# %% tags=["solution"]
+# Step 3. The same network on the positions alone: where the trajectory was, not how it moved
+def position_histogram(x):
+    return np.stack([np.histogram(row, bins=BINS, range=(-2, 2))[0] for row in x]) / x.shape[1]
+
+posterior_positions, score_positions = train_and_score(position_histogram, theta, x,
+                                                       density_estimator=learned_estimator(BINS))
+posterior_widths(posterior_positions, position_histogram);
+
+# %% [markdown] tags=["solution"]
+# **What we found.** Every row uses the 2,000 simulations of this notebook and the same flow. The scores are from our own runs, the times for two CPU cores.
+#
+# | Summaries | Score | Training time |
+# | --- | --- | --- |
+# | sbi's default `CNNEmbedding` on the raw trajectory (two convolution layers) | 0.4 to 0.9 | minutes |
+# | a deeper CNN on the raw trajectory (four convolution layers, the cell below) | 1.5 to 1.9 | 4 minutes |
+# | a five-layer CNN on the raw trajectory | 1.5 | 25 minutes |
+# | a small network on the histogram of positions | 0.6 to 0.7 | 10 seconds |
+# | **a small network on the histogram of transitions** | **3.35 to 3.43** | **10 seconds** |
+# | our eight hand-made statistics | 3.5 | 12 seconds |
+#
+# The deeper CNN needs 10,000 simulations and ten minutes on four cores to reach 3.1.
+#
+# **Why the histogram works.** For a Markov chain the counts of transitions hold everything the data say about the parameters, up to the width of the bins. The network on the histogram only has to learn the map from counts to parameters. The CNN on the raw trajectory has to discover first what to count: that wells have a width, that hops are rare, that displacements at short lags measure $D$. Each of these is a few lines of NumPy, or thousands of simulations to learn.
+#
+# **Why positions alone fail.** The histogram of positions says where the trajectory was, not how fast it moved. It is the same in a fast and in a slow medium, so the posterior is blind to $D$: its interval for $\log D$ stays nearly as wide as the prior's (91% to 99% in our runs), exactly as with the static statistics of Part 4. A network cannot recover what its input has thrown away, however long it trains.
+#
+# **Why the standardization matters.** The frequencies are tiny numbers, 1/576 on average. Fed to the network as they are, the training went wrong in four of our ten runs (scores near 1). With sbi's default, which standardizes every bin on its own, rare transitions that are zero in most trajectories are blown up to the size of the common ones, and the score drops to between 2.7 and 3.2. One mean and one standard deviation for the whole histogram (`"structured"`) keeps the picture intact.
+#
+# **Why this is a bonus.** The histogram is prior knowledge, exactly like your statistics: you told the network that only pairs of consecutive frames matter. Without such help, learned summaries are much more expensive than hand-made ones, in simulations and in training time, as the first three rows show. They win where the knowledge runs out: when nobody knows which features of the data matter, or when the features are too many and too subtle to write down. The usual practice is to start with statistics you understand, and to move to a learned embedding once simulations are cheap enough to pay for it.
+
+# %% tags=["solution"]
+# For reference, not for this afternoon: a CNN on the raw trajectory. About 4 minutes on two CPU cores.
 from sbi.neural_nets.embedding_nets import CNNEmbedding
 
-RUN_SLOW_BONUS = True        # about 4 minutes on two CPU cores; set to False to skip
+RUN_SLOW_BONUS = False       # set to True to train it
 
 def cnn_estimator():
     """Four convolution layers shrink the 5,000 frames to a few hundred numbers, two dense layers to 16."""
@@ -732,20 +839,3 @@ def raw_trajectory(x):
 
 if RUN_SLOW_BONUS:
     posterior_cnn, score_cnn = train_and_score(raw_trajectory, theta, x, density_estimator=cnn_estimator())
-
-# %% [markdown] tags=["solution"]
-# **What we found.** The cell above trains the deeper CNN on the 2,000 simulations of this notebook. The other rows are from our own runs.
-#
-# | Summaries | Simulations | Score |
-# | --- | --- | --- |
-# | sbi's default `CNNEmbedding` (two convolution layers) | 2,000 | 0.4 to 0.9 |
-# | the deeper CNN above | 2,000 | 1.5 to 1.9 |
-# | the deeper CNN above | 10,000 | 3.1 |
-# | our eight hand-made statistics | 2,000 | 3.5 |
-# | our eight hand-made statistics | 10,000 | 3.75 |
-#
-# We did not beat the hand-made statistics with a CNN. With 2,000 simulations it is not close, and with five times as many it is still behind what eight numbers achieve with 2,000. The 10,000-simulation run took ten minutes on four CPU cores.
-#
-# **Why.** The CNN has to discover from examples what you put in by hand: that the sign of $x$ does not matter, that wells have a width, that hops can be counted, that displacements at short lags measure $D$. Each of these is a few lines of NumPy and thousands of simulations to learn. Hand-made statistics are prior knowledge about the physics, and prior knowledge is worth simulations.
-#
-# Learned summaries win where that knowledge runs out: when nobody knows which features of the data matter, or when the features are too many and too subtle to write down. They also remove the risk of Part 4, where a badly chosen set of statistics silently made the posterior blind to a parameter. The usual practice is to start with statistics you understand, and move to a learned embedding once simulations are cheap enough to pay for it.

@@ -803,6 +803,86 @@ def check_sparse(score_200, score_200_start, score_2000):
             f"bronze, {b['score_bronze']:.2f})")
 
 
+def log_probs_at_truth(posterior, summary):
+    """Log posterior density at the true parameters, one number per test trajectory.
+
+    The score of train_and_score is the mean of these 200 numbers. To score an ensemble,
+    average the DENSITIES of its members, not their logarithms: for members with log
+    densities `log_probs` of shape (n_members, 200),
+        torch.logsumexp(log_probs, dim=0) - np.log(n_members)
+    is the log density of the equal-weight mixture, per test trajectory.
+    """
+    theta_test, x_test = load_test_set()
+    s_test = summarize(summary, x_test)
+    with warnings.catch_warnings(), torch.no_grad():
+        warnings.simplefilter("ignore")
+        return posterior.log_prob_batched(theta_test[None], x=s_test, norm_posterior=False)[0]
+
+
+def interval_coverage(posteriors, summary, level=0.5, num_samples=200, verbose=True):
+    """How often does the central interval of the posterior contain the true parameter?
+
+    For each of the 200 test trajectories, the central `level` interval of each parameter
+    is taken from posterior samples and compared with the true value. A posterior that
+    states its uncertainty correctly gives `level`; more means its intervals are wider
+    than they need to be, less means it is overconfident. With 200 test trajectories the
+    answer is uncertain by about 0.035 at level 0.5 and 0.02 at level 0.9.
+
+    Args:
+        posteriors: one posterior, or a list of posteriors. A list is treated as their
+            equal-weight ensemble: the same number of samples from every member, pooled.
+        summary: the summary function the posterior(s) were trained with.
+
+    Returns:
+        coverage of ΔG‡, coverage of log D.
+    """
+    members = list(posteriors) if isinstance(posteriors, (list, tuple)) else [posteriors]
+    theta_test, x_test = load_test_set()
+    s_test = summarize(summary, x_test)
+    tail = (1.0 - level) / 2.0
+    inside = []
+    for s_o, truth in zip(s_test, theta_test):
+        samples = torch.cat([_sample_inside_prior(m, num_samples, s_o, time_limit=0.5)[0]
+                             for m in members])
+        q = torch.quantile(samples, torch.tensor([tail, 1.0 - tail]), dim=0)
+        inside.append((truth >= q[0]) & (truth <= q[1]))
+    coverage = torch.stack(inside).float().mean(dim=0)
+    if verbose:
+        what = f"ensemble of {len(members)}" if len(members) > 1 else "single network"
+        print(f"{what}: the {level:.0%} interval contains the truth in "
+              f"{coverage[0]:.0%} (ΔG‡) and {coverage[1]:.0%} (log D) of the test trajectories")
+    return coverage[0].item(), coverage[1].item()
+
+
+def check_ensemble(gain_200, gain_2000):
+    """Bonus. The ensemble gains more where the training pinned the networks down less.
+
+    Args:
+        gain_200: score of the ensemble minus the mean score of its members, 200 simulations.
+        gain_2000: the same with 2,000 simulations.
+    """
+    b = load_benchmarks()["double_well"]
+    if gain_200 < -1e-6 or gain_2000 < -1e-6:
+        _report("Bonus · ensemble", False,
+                "a gain is negative: the score of an ensemble cannot be below the mean score of "
+                "its members. Average the densities, not the log densities (see tu.log_probs_at_truth)")
+        return
+    passed = (gain_200 > b["ensemble_gain_min"]
+              and gain_200 >= b["ensemble_gain_ratio_min"] * gain_2000)
+    _report("Bonus · ensemble", passed,
+            f"the ensemble gains {gain_200:.2f} with 200 simulations and {gain_2000:.2f} with 2,000 "
+            f"(target: more than {b['ensemble_gain_min']} with 200, and at least "
+            f"{b['ensemble_gain_ratio_min']:.0f} times the gain with 2,000)")
+
+
+def check_learned_summary(score):
+    """Bonus. A learned summary that beats what a CNN on the raw trajectory reaches here."""
+    b = load_benchmarks()["double_well"]
+    _report("Bonus · learned summaries", score > b["learned_score_min"],
+            f"score {score:.2f} with a learned summary (target > {b['learned_score_min']}; our "
+            f"hand-made statistics reach {b['score_reference']:.2f})")
+
+
 class FallbackPosterior:
     """A pre-trained posterior that takes raw trajectories: it reduces them itself."""
 

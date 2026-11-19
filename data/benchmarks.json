@@ -21,6 +21,9 @@
     "static_logD_width_min": 0.85,
     "score_prior": -1.39,
     "score_baseline": -1.18,
-    "score_reference": 3.53
+    "score_reference": 3.53,
+    "ensemble_gain_min": 0.2,
+    "ensemble_gain_ratio_min": 2.0,
+    "learned_score_min": 2.5
   }
 }
